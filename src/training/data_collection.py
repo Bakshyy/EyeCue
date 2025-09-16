@@ -18,7 +18,7 @@ while True:
         break
 
     # Display the captured frame
-    cv.imshow('Webcam Feed', frame)
+    cv.imshow('EyeCue', frame)
 
     # Wait for a key press (e.g., 'q' to quit)
     # cv.waitKey(1) waits for 1 millisecond
