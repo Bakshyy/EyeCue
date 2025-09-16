@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+#Folders
+data/
+models/
+
 # C extensions
 *.so
 
