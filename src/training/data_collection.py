@@ -7,7 +7,8 @@ CAPTURE_COUNT = 20
 root_dir = os.getcwd()
 data_object_path = os.path.join(root_dir, "data/train/object")
 data_no_object_path = os.path.join(root_dir, "data/train/no_object")
-# os.makedirs(data_folder, exist_ok=True)
+os.makedirs(data_object_path, exist_ok=True)
+os.makedirs(data_no_object_path, exist_ok=True)
 
 
 cap = cv.VideoCapture(0)
