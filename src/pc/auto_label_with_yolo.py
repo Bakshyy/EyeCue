@@ -1,102 +1,138 @@
-# auto_label_with_yolo.py
-# This script uses YOLOv8 (pretrained) to find tennis balls in images
-# and saves YOLO txt label files for them.
-# I use it for self_ball and supp_ball folders.
+# src/pc/auto_label_with_yolo.py
+"""
+Run YOLO on raw images and build a YOLO-style dataset under:
+  data/images/all
+  data/labels/all
+
+Rules:
+  - Every image gets a .txt label file.
+  - Ball subsets (self_ball, supp_ball) use YOLO boxes when present.
+  - Background subsets force empty label files (negative examples).
+"""
+
+from pathlib import Path
+import argparse
+import shutil
 
 from ultralytics import YOLO
-from pathlib import Path
+
+# Raw data layout
+RAW_BASE = Path("data") / "raw"
+
+SUBSETS = [
+    # (subdir name, expect_ball, conf_threshold)
+    ("self_ball", True, 0.10),
+    ("supp_ball", True, 0.25),
+    ("self_background", False, 0.25),
+    ("supp_background", False, 0.25),
+]
+
+# Where we build the unified YOLO dataset
+IMAGES_ALL_DIR = Path("data") / "images" / "all"
+LABELS_ALL_DIR = Path("data") / "labels" / "all"
+
+EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
+
+
+def iter_images(root: Path):
+    for p in sorted(root.glob("*")):
+        if p.is_file() and p.suffix.lower() in EXTS:
+            yield p
+
+
+def write_label(label_path: Path, boxes_norm):
+    """
+    boxes_norm: list of (cx, cy, w, h) in normalized [0,1] coords.
+    Always creates a label file (empty file => no ball).
+    """
+    label_path.parent.mkdir(parents=True, exist_ok=True)
+    with label_path.open("w") as f:
+        for cx, cy, w, h in boxes_norm:
+            # single class "ball" -> class_id 0
+            f.write(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
+
 
 def main():
-    # where my raw ball images are
-    self_ball_folder = Path("data/raw/self_ball")
-    supp_ball_folder = Path("data/raw/supp_ball")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--weights",
+        type=str,
+        default="models/yolo_ball.pt",
+        help="Path to YOLO weights (.pt)",
+    )
+    args = parser.parse_args()
 
-    # where I want all images and labels to go
-    images_out_folder = Path("data/images/all")
-    labels_out_folder = Path("data/labels/all")
+    weights_path = Path(args.weights)
+    if not weights_path.exists():
+        raise FileNotFoundError(f"YOLO weights not found: {weights_path}")
 
-    images_out_folder.mkdir(parents=True, exist_ok=True)
-    labels_out_folder.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Loading YOLO model from: {weights_path}")
+    model = YOLO(str(weights_path))
 
-    # load tiny YOLOv8 model (COCO pretrained, has "sports ball" class)
-    model = YOLO("yolov8n.pt")
+    IMAGES_ALL_DIR.mkdir(parents=True, exist_ok=True)
+    LABELS_ALL_DIR.mkdir(parents=True, exist_ok=True)
 
-    # I will run the same function on both self and supplemental balls
-    auto_label_folder(self_ball_folder, images_out_folder, labels_out_folder, model)
-    auto_label_folder(supp_ball_folder, images_out_folder, labels_out_folder, model)
-
-    print("Done auto-labeling ball images with YOLO.")
-
-
-def auto_label_folder(input_folder, images_out_folder, labels_out_folder, model):
-    print(f"Running YOLO on folder: {input_folder}")
-
-    # collect all jpg and png files
-    image_paths = []
-    for ext in ["*.jpg", "*.jpeg", "*.png"]:
-        image_paths.extend(input_folder.glob(ext))
-
-    print("Number of images found:", len(image_paths))
-
-    # find class id for "sports ball" in YOLO's labels
-    sports_ball_ids = []
-    for class_id, name in model.names.items():
-        if "sports ball" in name.lower():
-            sports_ball_ids.append(class_id)
-
-    if len(sports_ball_ids) == 0:
-        print("Error: could not find 'sports ball' class in YOLO model.")
-        return
-
-    print("Using YOLO class ids for sports ball:", sports_ball_ids)
-
-    for img_path in image_paths:
-        # run YOLO prediction on the image
-        results = model.predict(
-            source=str(img_path),
-            imgsz=640,
-            conf=0.5,
-            verbose=False
-        )
-
-        r = results[0]
-        boxes = r.boxes
-
-        # keep only sports ball detections
-        ball_boxes = []
-        for b in boxes:
-            cls_id = int(b.cls.item())
-            if cls_id in sports_ball_ids:
-                ball_boxes.append(b)
-
-        if len(ball_boxes) == 0:
-            # YOLO didn't find any ball
-            print("[NO BALL DETECTED]", img_path.name)
+    for subset_name, expect_ball, conf_th in SUBSETS:
+        subset_dir = RAW_BASE / subset_name
+        if not subset_dir.exists():
+            print(f"[WARN] Raw subset dir does not exist, skipping: {subset_dir}")
             continue
 
-        # copy or save image into images_out_folder
-        out_img_path = images_out_folder / img_path.name
-        if not out_img_path.exists():
-            out_img_path.write_bytes(img_path.read_bytes())
+        img_paths = list(iter_images(subset_dir))
+        total = len(img_paths)
 
-        # write YOLO label file for this image (class 0 = tennis_ball)
-        h, w = r.orig_shape  # height, width
-        label_path = labels_out_folder / (img_path.stem + ".txt")
+        print(
+            f"\n[INFO] Processing '{subset_name}' "
+            f"(expect_ball={expect_ball}, conf={conf_th})"
+        )
+        print(f"  Found {total} images")
 
-        lines = []
-        for b in ball_boxes:
-            x1, y1, x2, y2 = b.xyxy[0].tolist()
-            cx = (x1 + x2) / 2.0 / w
-            cy = (y1 + y2) / 2.0 / h
-            bw = (x2 - x1) / w
-            bh = (y2 - y1) / h
-            # YOLO format: class cx cy w h
-            line = f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}"
-            lines.append(line)
+        det_count = 0
+        no_det_count = 0
 
-        label_path.write_text("\n".join(lines))
-        print("[LABELED]", img_path.name, "->", label_path.name)
+        for img_path in img_paths:
+            # Copy image into data/images/all
+            dst_img = IMAGES_ALL_DIR / img_path.name
+            shutil.copy2(img_path, dst_img)
+
+            label_path = LABELS_ALL_DIR / (img_path.stem + ".txt")
+
+            boxes_norm = []
+
+            if expect_ball:
+                # Run YOLO
+                results = model(str(img_path), conf=conf_th, verbose=False)
+                r = results[0]
+
+                if r.boxes is not None and len(r.boxes) > 0:
+                    # Assume our model has ball as class 0 and we just take all boxes
+                    xywhn = r.boxes.xywhn.cpu().numpy()  # (N, 4)
+                    for cx, cy, w, h in xywhn:
+                        boxes_norm.append(
+                            (float(cx), float(cy), float(w), float(h))
+                        )
+                    det_count += 1
+                else:
+                    # Expected a ball but YOLO missed it -> treat as "no ball" for now
+                    no_det_count += 1
+            else:
+                # Background subsets: ALWAYS negative
+                no_det_count += 1
+
+            # Always write a label file, even if empty (=> negative)
+            write_label(label_path, boxes_norm)
+
+        print(f"[STATS] {subset_name}:")
+        print(f"  total images     : {total}")
+        print(f"  with ball boxes  : {det_count}")
+        print(f"  empty label file : {no_det_count}")
+
+    print(
+        "\n[INFO] Done. YOLO labels written to", LABELS_ALL_DIR,
+        "and images copied to", IMAGES_ALL_DIR,
+    )
 
 
 if __name__ == "__main__":
     main()
+

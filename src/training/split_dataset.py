@@ -1,14 +1,18 @@
 # src/training/split_dataset.py
-# Split "all" images+labels into train/val/test folders.
+# Split YOLO-labeled data/images/all + data/labels/all into
+# data/processed/{train,val,test}/(images,labels).
 
 import shutil
 from pathlib import Path
 import random
 
-BASE_DIR = Path("data") / "processed"
+# Raw YOLO outputs
+DATA_DIR = Path("data")
+ALL_IMAGES_DIR = DATA_DIR / "images" / "all"
+ALL_LABELS_DIR = DATA_DIR / "labels" / "all"
 
-ALL_IMAGES_DIR = BASE_DIR / "all" / "images"
-ALL_LABELS_DIR = BASE_DIR / "all" / "labels"
+# Where we write the splits
+PROCESSED_DIR = DATA_DIR / "processed"
 
 SPLITS = {
     "train": 0.7,
@@ -16,38 +20,39 @@ SPLITS = {
     "test": 0.1,
 }
 
-# allowed image extensions
-EXTS = [".jpg", ".jpeg", ".png", ".bmp", ".gif"]
+EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif"}
 
 
 def main():
     random.seed(42)
 
-    # collect all image files that have label files
+    # Collect all (image, label) pairs where the label file exists
     all_items = []
     for img_path in sorted(ALL_IMAGES_DIR.rglob("*")):
         if not img_path.is_file():
             continue
-
         if img_path.suffix.lower() not in EXTS:
             continue
 
         stem = img_path.stem
         label_path = ALL_LABELS_DIR / f"{stem}.txt"
         if not label_path.exists():
-            # if label missing, skip
-            # print("No label for", img_path)
+            # If a label file doesn't exist at all, skip this image.
+            # (auto_label_with_yolo should have created an empty .txt even for backgrounds;
+            # if it didn’t, those images won’t be seen by the detector.)
             continue
 
         all_items.append((img_path, label_path))
 
     total = len(all_items)
-    print(f"Total images: {total}")
+    print(f"Total images with label files: {total}")
 
-    # shuffle
+    if total == 0:
+        print("No labeled images found in data/images/all + data/labels/all.")
+        return
+
     random.shuffle(all_items)
 
-    # compute split sizes
     n_train = int(total * SPLITS["train"])
     n_val = int(total * SPLITS["val"])
     n_test = total - n_train - n_val
@@ -62,15 +67,24 @@ def main():
         "test": (n_train + n_val, total),
     }
 
-    # create output dirs
+    # Clean + recreate output dirs
     for split in ["train", "val", "test"]:
-        (BASE_DIR / split / "images").mkdir(parents=True, exist_ok=True)
-        (BASE_DIR / split / "labels").mkdir(parents=True, exist_ok=True)
+        out_img_dir = PROCESSED_DIR / split / "images"
+        out_lab_dir = PROCESSED_DIR / split / "labels"
 
-    # copy files into splits
+        # Remove old contents if they exist
+        if out_img_dir.exists():
+            shutil.rmtree(out_img_dir)
+        if out_lab_dir.exists():
+            shutil.rmtree(out_lab_dir)
+
+        out_img_dir.mkdir(parents=True, exist_ok=True)
+        out_lab_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy files into splits
     for split, (start, end) in split_indices.items():
-        out_img_dir = BASE_DIR / split / "images"
-        out_lab_dir = BASE_DIR / split / "labels"
+        out_img_dir = PROCESSED_DIR / split / "images"
+        out_lab_dir = PROCESSED_DIR / split / "labels"
 
         for img_path, label_path in all_items[start:end]:
             stem = img_path.stem
@@ -80,7 +94,7 @@ def main():
             shutil.copy2(img_path, new_img_path)
             shutil.copy2(label_path, new_label_path)
 
-    print("Finished creating train/val/test splits.")
+    print("Finished creating train/val/test splits under data/processed.")
 
 
 if __name__ == "__main__":
